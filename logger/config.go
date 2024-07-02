@@ -14,11 +14,16 @@
 
 package logger
 
-import "sync"
+import (
+	"go.uber.org/zap/zapcore"
+	"sync"
+)
 
 type Config struct {
-	JSON  bool   `yaml:"json,omitempty"`
-	Level string `yaml:"level,omitempty"`
+	JSON          bool                   `yaml:"json,omitempty"`
+	Level         string                 `yaml:"level,omitempty"`
+	EncoderConfig *zapcore.EncoderConfig `yaml:"encoder_config,omitempty"`
+
 	// true to enable log sampling, where the same log message and level will be throttled.
 	// we have two layers of sampling
 	// 1. global sampling - within a second, it will log the first SampleInitial, then every SampleInterval messages.
@@ -39,6 +44,14 @@ type Config struct {
 	ItemSampleInitial  int `yaml:"item_sample_initial,omitempty"`
 	ItemSampleInterval int `yaml:"item_sample_interval,omitempty"`
 
+	// DisableCaller stops annotating logs with the calling function's file
+	// name and line number. By default, all logs are annotated.
+	DisableCaller bool `yaml:"disable_caller"`
+	// DisableStacktrace completely disables automatic stacktrace capturing. By
+	// default, stacktraces are captured for WarnLevel and above logs in
+	// development and ErrorLevel and above in production.
+	DisableStacktrace bool `yaml:"disable_stacktrace"`
+
 	lock               sync.Mutex       `yaml:"-"`
 	onUpdatedCallbacks []ConfigObserver `yaml:"-"`
 }
@@ -56,6 +69,8 @@ func (c *Config) Update(o *Config) error {
 	c.ItemSampleInitial = o.ItemSampleInitial
 	c.ItemSampleInterval = o.ItemSampleInterval
 	c.ComponentLevels = o.ComponentLevels
+	c.DisableCaller = o.DisableCaller
+	c.DisableStacktrace = o.DisableStacktrace
 	callbacks := c.onUpdatedCallbacks
 	c.lock.Unlock()
 

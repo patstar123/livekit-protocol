@@ -15,6 +15,8 @@
 package logger
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -28,13 +30,14 @@ var (
 	discardLogger        = logr.Discard()
 	defaultLogger Logger = LogRLogger(discardLogger)
 	pkgLogger     Logger = LogRLogger(discardLogger)
+	pkgConfig     *zap.Config
 )
 
 // InitFromConfig initializes a Zap-based logger
 func InitFromConfig(conf *Config, name string) {
-	l, err := NewZapLogger(conf)
+	l, c, err := NewZapLogger(conf)
 	if err == nil {
-		SetLogger(l, name)
+		SetLogger(l, c, name)
 	}
 }
 
@@ -43,11 +46,65 @@ func GetLogger() Logger {
 	return defaultLogger
 }
 
+func GetPkgLogger() Logger {
+	return pkgLogger
+}
+
 // SetLogger lets you use a custom logger. Pass in a logr.Logger with default depth
-func SetLogger(l Logger, name string) {
+func SetLogger(l Logger, c *zap.Config, name string) {
 	defaultLogger = l.WithCallDepth(1).WithName(name)
 	// pkg wrapper needs to drop two levels of depth
 	pkgLogger = l.WithCallDepth(2).WithName(name)
+	pkgConfig = c
+}
+
+func SetLogLevel(level string) {
+	if pkgConfig != nil {
+		lvl := ParseZapLevel(level)
+		pkgConfig.Level.SetLevel(lvl)
+	}
+	defaultLogger.SetLevel(level)
+	pkgLogger.SetLevel(level)
+}
+
+func GetLogLevel() string {
+	return pkgLogger.GetLevel()
+}
+
+func IsEnabledDebug() bool {
+	return pkgLogger.IsEnabledDebug()
+}
+
+func Debug(args ...interface{}) {
+	pkgLogger.Debug(args...)
+}
+
+func Info(args ...interface{}) {
+	pkgLogger.Info(args...)
+}
+
+func Warn(args ...interface{}) {
+	pkgLogger.Warn(args...)
+}
+
+func Error(args ...interface{}) {
+	pkgLogger.Error(args...)
+}
+
+func Debugf(template string, args ...interface{}) {
+	pkgLogger.Debugf(template, args...)
+}
+
+func Infof(template string, args ...interface{}) {
+	pkgLogger.Infof(template, args...)
+}
+
+func Warnf(err error, template string, args ...interface{}) {
+	pkgLogger.Warnf(err, template, args...)
+}
+
+func Errorf(err error, template string, args ...interface{}) {
+	pkgLogger.Errorf(err, template, args...)
 }
 
 func Debugw(msg string, keysAndValues ...interface{}) {
@@ -66,6 +123,22 @@ func Errorw(msg string, err error, keysAndValues ...interface{}) {
 	pkgLogger.Errorw(msg, err, keysAndValues...)
 }
 
+func Debugln(args ...interface{}) {
+	pkgLogger.Debugln(args...)
+}
+
+func Infoln(args ...interface{}) {
+	pkgLogger.Infoln(args...)
+}
+
+func Warnln(args ...interface{}) {
+	pkgLogger.Warnln(args...)
+}
+
+func Errorln(args ...interface{}) {
+	pkgLogger.Errorln(args...)
+}
+
 func ParseZapLevel(level string) zapcore.Level {
 	lvl := zapcore.InfoLevel
 	if level != "" {
@@ -75,10 +148,7 @@ func ParseZapLevel(level string) zapcore.Level {
 }
 
 type Logger interface {
-	Debugw(msg string, keysAndValues ...interface{})
-	Infow(msg string, keysAndValues ...interface{})
-	Warnw(msg string, err error, keysAndValues ...interface{})
-	Errorw(msg string, err error, keysAndValues ...interface{})
+	IsEnabledDebug() bool
 	WithValues(keysAndValues ...interface{}) Logger
 	WithName(name string) Logger
 	// WithComponent creates a new logger with name as "<name>.<component>", and uses a log level as specified
@@ -87,6 +157,26 @@ type Logger interface {
 	WithItemSampler() Logger
 	// WithoutSampler returns the original logger without sampling
 	WithoutSampler() Logger
+
+	SetLevel(lvl string) error
+	GetLevel() string
+
+	Debug(args ...interface{})
+	Info(args ...interface{})
+	Warn(args ...interface{})
+	Error(args ...interface{})
+	Debugf(template string, args ...interface{})
+	Infof(template string, args ...interface{})
+	Warnf(err error, template string, args ...interface{})
+	Errorf(err error, template string, args ...interface{})
+	Debugw(msg string, keysAndValues ...interface{})
+	Infow(msg string, keysAndValues ...interface{})
+	Warnw(msg string, err error, keysAndValues ...interface{})
+	Errorw(msg string, err error, keysAndValues ...interface{})
+	Debugln(args ...interface{})
+	Infoln(args ...interface{})
+	Warnln(args ...interface{})
+	Errorln(args ...interface{})
 }
 
 type sharedConfig struct {
@@ -169,7 +259,7 @@ type ZapLogger struct {
 	SampleInterval int
 }
 
-func NewZapLogger(conf *Config) (*ZapLogger, error) {
+func NewZapLogger(conf *Config) (*ZapLogger, *zap.Config, error) {
 	sc := newSharedConfig(conf)
 	zl := &ZapLogger{
 		sharedConfig:   sc,
@@ -180,20 +270,25 @@ func NewZapLogger(conf *Config) (*ZapLogger, error) {
 	}
 	zapConfig := zap.Config{
 		// set to the lowest level since we are doing our own filtering in `isEnabled`
-		Level:            zap.NewAtomicLevelAt(zapcore.DebugLevel),
-		Development:      false,
-		Encoding:         "console",
-		EncoderConfig:    zap.NewDevelopmentEncoderConfig(),
-		OutputPaths:      []string{"stderr"},
-		ErrorOutputPaths: []string{"stderr"},
+		Level:             zap.NewAtomicLevelAt(zapcore.DebugLevel),
+		Development:       false,
+		Encoding:          "console",
+		EncoderConfig:     zap.NewDevelopmentEncoderConfig(),
+		OutputPaths:       []string{"stderr"},
+		ErrorOutputPaths:  []string{"stderr"},
+		DisableCaller:     conf.DisableCaller,
+		DisableStacktrace: conf.DisableStacktrace,
 	}
 	if conf.JSON {
 		zapConfig.Encoding = "json"
 		zapConfig.EncoderConfig = zap.NewProductionEncoderConfig()
 	}
+	if conf.EncoderConfig != nil {
+		zapConfig.EncoderConfig = *conf.EncoderConfig
+	}
 	l, err := zapConfig.Build()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	zl.unsampled = l.Sugar()
 
@@ -221,7 +316,7 @@ func NewZapLogger(conf *Config) (*ZapLogger, error) {
 	} else {
 		zl.zap = zl.unsampled
 	}
-	return zl, nil
+	return zl, &zapConfig, nil
 }
 
 func (l *ZapLogger) WithFieldSampler(config FieldSamplerConfig) *ZapLogger {
@@ -234,6 +329,74 @@ func (l *ZapLogger) WithFieldSampler(config FieldSamplerConfig) *ZapLogger {
 
 func (l *ZapLogger) ToZap() *zap.SugaredLogger {
 	return l.zap
+}
+
+func (l *ZapLogger) IsEnabledDebug() bool {
+	return l.isEnabled(zapcore.DebugLevel)
+}
+
+func (l *ZapLogger) Debug(args ...interface{}) {
+	if !l.isEnabled(zapcore.DebugLevel) {
+		return
+	}
+	l.zap.Debugln(args...)
+}
+
+func (l *ZapLogger) Info(args ...interface{}) {
+	if !l.isEnabled(zapcore.InfoLevel) {
+		return
+	}
+	l.zap.Debugln(args...)
+}
+
+func (l *ZapLogger) Warn(args ...interface{}) {
+	if !l.isEnabled(zapcore.WarnLevel) {
+		return
+	}
+	l.zap.Debugln(args...)
+}
+
+func (l *ZapLogger) Error(args ...interface{}) {
+	if !l.isEnabled(zapcore.ErrorLevel) {
+		return
+	}
+	l.zap.Debugln(args...)
+}
+
+func (l *ZapLogger) Debugf(template string, args ...interface{}) {
+	if !l.isEnabled(zapcore.DebugLevel) {
+		return
+	}
+	l.zap.Debugf(template, args...)
+}
+
+func (l *ZapLogger) Infof(template string, args ...interface{}) {
+	if !l.isEnabled(zapcore.InfoLevel) {
+		return
+	}
+	l.zap.Infof(template, args...)
+}
+
+func (l *ZapLogger) Warnf(err error, template string, args ...interface{}) {
+	if !l.isEnabled(zapcore.WarnLevel) {
+		return
+	}
+	if err != nil {
+		template += " (error: %v)"
+		args = append(args, err)
+	}
+	l.zap.Warnf(template, args...)
+}
+
+func (l *ZapLogger) Errorf(err error, template string, args ...interface{}) {
+	if !l.isEnabled(zapcore.ErrorLevel) {
+		return
+	}
+	if err != nil {
+		template += " (error: %v)"
+		args = append(args, err)
+	}
+	l.zap.Errorf(template, args...)
 }
 
 func (l *ZapLogger) Debugw(msg string, keysAndValues ...interface{}) {
@@ -268,6 +431,34 @@ func (l *ZapLogger) Errorw(msg string, err error, keysAndValues ...interface{}) 
 		keysAndValues = append(keysAndValues, "error", err)
 	}
 	l.zap.Errorw(msg, keysAndValues...)
+}
+
+func (l *ZapLogger) Debugln(args ...interface{}) {
+	if !l.isEnabled(zapcore.DebugLevel) {
+		return
+	}
+	l.zap.Debugln(args...)
+}
+
+func (l *ZapLogger) Infoln(args ...interface{}) {
+	if !l.isEnabled(zapcore.InfoLevel) {
+		return
+	}
+	l.zap.Infoln(args...)
+}
+
+func (l *ZapLogger) Warnln(args ...interface{}) {
+	if !l.isEnabled(zapcore.WarnLevel) {
+		return
+	}
+	l.zap.Warnln(args...)
+}
+
+func (l *ZapLogger) Errorln(args ...interface{}) {
+	if !l.isEnabled(zapcore.ErrorLevel) {
+		return
+	}
+	l.zap.Errorln(args...)
 }
 
 func (l *ZapLogger) WithValues(keysAndValues ...interface{}) Logger {
@@ -341,6 +532,16 @@ func (l *ZapLogger) WithoutSampler() Logger {
 	return &dup
 }
 
+func (l *ZapLogger) SetLevel(level string) error {
+	lvl := ParseZapLevel(level)
+	l.level = zap.NewAtomicLevelAt(lvl)
+	return nil
+}
+
+func (l *ZapLogger) GetLevel() string {
+	return l.level.String()
+}
+
 func (l *ZapLogger) isEnabled(level zapcore.Level) bool {
 	return level >= l.level.Level()
 }
@@ -352,6 +553,42 @@ func (l LogRLogger) toLogr() logr.Logger {
 		return discardLogger
 	}
 	return logr.Logger(l)
+}
+
+func (l LogRLogger) IsEnabledDebug() bool {
+	return true
+}
+
+func (l LogRLogger) Debug(args ...interface{}) {
+	l.toLogr().V(1).Info("", args...)
+}
+
+func (l LogRLogger) Info(args ...interface{}) {
+	l.toLogr().Info("", args...)
+}
+
+func (l LogRLogger) Warn(args ...interface{}) {
+	l.toLogr().Info("", args...)
+}
+
+func (l LogRLogger) Error(args ...interface{}) {
+	l.toLogr().Error(nil, "", args)
+}
+
+func (l LogRLogger) Debugf(template string, args ...interface{}) {
+	l.toLogr().V(1).Info(fmt.Sprintf(template, args...))
+}
+
+func (l LogRLogger) Infof(template string, args ...interface{}) {
+	l.toLogr().Info(fmt.Sprintf(template, args...))
+}
+
+func (l LogRLogger) Warnf(err error, template string, args ...interface{}) {
+	l.toLogr().Info(fmt.Sprintf(template, args...), "error", err)
+}
+
+func (l LogRLogger) Errorf(err error, template string, args ...interface{}) {
+	l.toLogr().Error(err, fmt.Sprintf(template, args...))
 }
 
 func (l LogRLogger) Debugw(msg string, keysAndValues ...interface{}) {
@@ -371,6 +608,22 @@ func (l LogRLogger) Warnw(msg string, err error, keysAndValues ...interface{}) {
 
 func (l LogRLogger) Errorw(msg string, err error, keysAndValues ...interface{}) {
 	l.toLogr().Error(err, msg, keysAndValues...)
+}
+
+func (l LogRLogger) Debugln(args ...interface{}) {
+	l.toLogr().V(1).Info("", args...)
+}
+
+func (l LogRLogger) Infoln(args ...interface{}) {
+	l.toLogr().Info("", args...)
+}
+
+func (l LogRLogger) Warnln(args ...interface{}) {
+	l.toLogr().Info("", args...)
+}
+
+func (l LogRLogger) Errorln(args ...interface{}) {
+	l.toLogr().Error(nil, "", args)
 }
 
 func (l LogRLogger) WithValues(keysAndValues ...interface{}) Logger {
@@ -396,4 +649,12 @@ func (l LogRLogger) WithItemSampler() Logger {
 
 func (l LogRLogger) WithoutSampler() Logger {
 	return l
+}
+
+func (l LogRLogger) SetLevel(level string) error {
+	return errors.New("not supported")
+}
+
+func (l LogRLogger) GetLevel() string {
+	return "info"
 }
